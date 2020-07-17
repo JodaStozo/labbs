@@ -1,0 +1,184 @@
+version: '3.7'
+
+services:
+  db:
+    image: mysql:8.0
+    container_name: db
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      - MYSQL_DATABASE=wordpress
+    volumes:
+      - dbdata:/var/lib/mysql
+    command:
+      - '--default-authentication-plugin=mysql_native_password'
+    networks:
+      - app-network
+
+  phpadmin:
+    image: phpmyadmin/phpmyadmin:latest
+    container_name: phpmyadmin
+    depends_on:
+      - db
+    ports:
+      - 81:81
+    environment:
+      - PMA_ARBITRARY=1
+    networks:
+      - app-network
+
+  wordpress:
+    depends_on:
+      - db
+    image: wordpress:5.1.1-fpm-alpine
+    container_name: wordpress
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      - WORDPRESS_DB_HOST=db:3306
+      - WORDPRESS_DB_USER=$MYSQL_USER
+      - WORDPRESS_DB_PASSWORD=$MYSQL_PASSWORD
+      - WORDPRESS_DB_NAME=wordpress
+    volumes:
+      - wordpress:/var/www/html
+    networks:
+      - app-network
+
+  webserver:
+    depends_on:
+      - wordpress
+    image: nginx:1.15.12-alpine
+    container_name: webserver
+    restart: unless-stopped
+    ports:
+      - "80:80"
+    volumes:
+      - wordpress:/var/www/html
+      - ./nginx-conf:/etc/nginx/conf.d
+      - certbot-etc:/etc/letsencrypt
+    networks:
+      - app-network
+
+  certbot:
+    depends_on:
+      - webserver
+    image: certbot/certbot
+    container_name: certbot
+    volumes:
+      - certbot-etc:/etc/letsencrypt
+      - wordpress:/var/www/html
+    command:
+      - 'certonly --webroot --webroot-path=/var/www/html --email joda@joda.com.br -- agree-tos --no-eff-email --staging -d joda2.com -d www.joda2.com.br'
+
+  prometheus:
+    image: prom/prometheus
+    container_name: prometheus
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml
+      - ./prometheus_db:/var/lib/prometheus
+      - ./prometheus_db:/var/prometheus
+      - ./prometheus_db:/etc/prometheus
+      - ./alert.rules:/etc/prometheus/alert.rules
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--web.route-prefix=/'
+      - '--storage.tsdb.retention.time=200h'
+      - '--web.enable-lifecycle'
+    restart: unless-stopped
+    ports:
+      - 9090:9090
+    networks:
+      - app-network
+
+  node-exporter:
+    image: prom/node-exporter
+    container_name: node-exporter
+    ports:
+      - '9100:9100'
+    networks:
+      - app-network
+
+  mysql-exporter:
+    image: prom/mysqld-exporter
+    container_name: mysql-exporter
+    ports:
+      - '9104:9104'
+    env_file: .env
+    volumes:
+      - ./mysql-exporter/.my.cnf:/root/.my.cnf
+    environment:
+      - DATA_SOURCE_NAME=joda:$MYSQL_PASSWORD@(db:3306)/wordpress
+      - collect.info_schema.tablestats=true
+      - collect.info_schema.userstats=true
+      - collect.info_schema.query_response_time=true
+      - collect.auto_increment.columns=true
+      - collect.binlog_size=true
+      - collect.perf_schema.eventsstatements=true
+      - collect.perf_schema.eventswaits=true
+      - collect.perf_schema.file_events=true
+      - collect.perf_schema.indexiowaits=true
+      - collect.perf_schema.tableiowaits=true
+      - collect.perf_schema.tablelocks=true
+      - collect.slave_status=true
+      - collect.slave_hosts=true
+    depends_on:
+      - db
+#    command: /bin/mysqld_exporter collect.binlog_size=true collect.info_schema.processlist=true
+    networks:
+      - app-network
+
+  cadvisor:
+    image: google/cadvisor:latest
+    container_name: cadvisor
+    ports:
+      - '8080:8080'
+    volumes:
+      - /:/rootfs:ro
+      - /var/run:/var/run:rw
+      - /sys:/sys:ro
+      - /var/lib/docker/:/var/lib/doccker:ro
+    networks:
+      - app-network
+
+  grafana:
+    image: grafana/grafana
+    container_name: grafana
+    restart: unless-stopped
+    user: "0"
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+    volumes:
+      - ./grafana_db:/var/lib/grafana
+    depends_on:
+      - prometheus
+    ports:
+      - '3000:3000'
+    networks:
+      - app-network
+
+#  reports:
+#    image: skedler/reports:latest
+#    container_name: reports
+#    privileged: true
+#    cap_add:
+#      - SYS_ADMIN
+#    volumes:
+#      - /sys/fs/cgroup:/sys/fs/cgroup:ro
+#      - reportdata:/var/lib/skedler
+#      - ./reporting.yml:/opt/skedler/config/reporting.yml
+#    command: /opt/skedler/bin/skedler
+#    ports:
+#      - 3001:3001
+
+networks:
+#  monitor-net:
+#    driver: bridge
+  app-network:
+    driver: bridge
+
+volumes:
+  certbot-etc:
+  wordpress:
+  dbdata:
+#  reportdata:
+#    driver: local
